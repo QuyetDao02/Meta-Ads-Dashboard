@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 # META API
 # ==============================
 
-API_VERSION = os.getenv("META_API_VERSION", "v27.0")
+API_VERSION = os.getenv("META_API_VERSION", "v25.0")
 GRAPH_API_BASE = f"https://graph.facebook.com/{API_VERSION}"
 
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", "").strip()
