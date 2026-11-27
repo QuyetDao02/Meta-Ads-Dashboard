@@ -112,6 +112,7 @@ def save_sync_state(state: dict):
     _atomic_write_json(SYNC_STATE_FILE, state)
 
 
+
 def merge_ads(
     existing_payload: dict,
     new_rows: List[dict],
@@ -121,12 +122,13 @@ def merge_ads(
     levels: tuple,
 ):
     """
-    Cập nhật kho JSON.
+    Cập nhật kho JSON an toàn.
 
-    - Xóa bản ghi thuộc tài khoản/cấp/ngày đang được đồng bộ.
-    - Chèn dữ liệu mới từ Meta.
-    - Giữ nguyên dữ liệu ngoài khoảng đồng bộ.
+    - Chỉ xóa dữ liệu của tài khoản thực sự đang đồng bộ.
+    - Chỉ xóa đúng cấp dữ liệu và khoảng ngày được làm mới.
+    - Chèn dữ liệu mới.
     - Chống trùng bằng record key.
+    - Giữ dữ liệu ngoài phạm vi đồng bộ.
     - Loại dữ liệu quá thời hạn lưu trữ.
     """
 
@@ -135,34 +137,41 @@ def merge_ads(
     refreshed_account_ids = {
         str(account.get("account_id", ""))
         for account in accounts
+        if account.get("account_id")
     }
 
     refreshed_levels = set(levels)
 
     merged = {}
 
-    # Giữ các dòng không thuộc vùng đang được đồng bộ.
+    # Giữ dữ liệu không nằm trong phạm vi đồng bộ.
     for row in existing_rows:
+
         account_id = str(row.get("account_id", ""))
         level = row.get("level", "")
-        date = row.get("date_start", "")
+        row_date = row.get("date_start", "")
 
         is_refreshed = (
             account_id in refreshed_account_ids
             and level in refreshed_levels
-            and since <= date <= until
+            and since <= row_date <= until
         )
 
-        if not is_refreshed:
-            key = make_record_key(row)
-            merged[key] = row
+        if is_refreshed:
+            continue
 
-    # Chèn dữ liệu vừa tải từ Meta.
-    for row in new_rows:
         key = make_record_key(row)
         merged[key] = row
 
-    # Giữ lại dữ liệu trong thời hạn lưu trữ.
+    # Thêm dữ liệu mới từ Meta.
+    for row in new_rows:
+
+        key = make_record_key(row)
+
+        if key:
+            merged[key] = row
+
+    # Lọc dữ liệu còn trong thời hạn lưu trữ.
     cutoff = retention_cutoff()
 
     retained_rows = [
@@ -171,7 +180,7 @@ def merge_ads(
         if row.get("date_start", "") >= cutoff
     ]
 
-    # Sắp xếp để JSON ổn định, dễ kiểm tra thay đổi.
+    # Sắp xếp dữ liệu.
     retained_rows.sort(
         key=lambda row: (
             row.get("date_start", ""),
@@ -183,17 +192,20 @@ def merge_ads(
         )
     )
 
-    # Cập nhật thông tin tài khoản nhưng vẫn giữ tài khoản
-    # cũ nếu lần đồng bộ hiện tại không trả về tài khoản đó.
+    # Cập nhật thông tin tài khoản.
     account_map = {}
 
     for account in existing_payload.get("accounts", []):
+
         account_id = str(account.get("account_id", ""))
+
         if account_id:
             account_map[account_id] = account
 
     for account in accounts:
+
         account_id = str(account.get("account_id", ""))
+
         if account_id:
             account_map[account_id] = account
 
@@ -202,17 +214,20 @@ def merge_ads(
         "retention_days": RETENTION_DAYS,
         "accounts": sorted(
             account_map.values(),
-            key=lambda item: str(item.get("name", "")).lower(),
+            key=lambda item: str(
+                item.get("name", "")
+            ).lower(),
         ),
         "data": retained_rows,
     }
 
     logger.info(
-        "Kho dữ liệu: %s bản ghi trước, %s bản ghi mới, "
-        "%s bản ghi sau cập nhật.",
+        "Kho dữ liệu: %s bản ghi trước, "
+        "%s bản ghi mới, %s bản ghi sau cập nhật.",
         len(existing_rows),
         len(new_rows),
         len(retained_rows),
     )
 
     return result
+
