@@ -127,13 +127,13 @@ def process_task(
     existing_payload = load_ads()
 
     updated_payload = merge_ads(
-        existing_payload=existing_payload,
-        new_rows=normalized_rows,
-        accounts=accounts,
-        since=since,
-        until=until,
-        levels=(level,),
-    )
+    existing_payload=existing_payload,
+    new_rows=normalized_rows,
+    accounts=[account],
+    since=since,
+    until=until,
+    levels=(level,),
+)
 
     save_ads(updated_payload)
 
