@@ -1,6 +1,6 @@
 {
   "initial_sync_completed": false,
-  "last_successful_sync": "2026-11-27T17:27:12.595544+00:00",
+  "last_successful_sync": "2026-11-27T17:28:20.799162+00:00",
   "initial_sync_since": "2025-11-28",
   "initial_sync_until": "2026-11-27",
   "initial_sync_account_ids": [
@@ -140,6 +140,6 @@
     "9961157290628258",
     "996527953131949"
   ],
-  "initial_sync_task_index": 2810,
+  "initial_sync_task_index": 2860,
   "initial_sync_tasks_total": 21465
 }
