@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-27T17:23:10.278200+00:00",
+  "updated_at": "2026-11-27T17:24:04.860642+00:00",
   "retention_days": 365,
   "accounts": [
     {
@@ -72827,6 +72827,28 @@
       "result_type": "messaging_conversations_started"
     },
     {
+      "level": "ad",
+      "account_id": "1411181790411470",
+      "account_name": "Win 1",
+      "account_currency": "VND",
+      "campaign_id": "120240123543720036",
+      "campaign_name": "Tương tác Top",
+      "adset_id": "120240123543730036",
+      "adset_name": "1",
+      "ad_id": "120240123543740036",
+      "ad_name": "1",
+      "date_start": "2026-01-09",
+      "date_stop": "2026-01-09",
+      "spend": 10552.0,
+      "impressions": 644,
+      "reach": 644,
+      "clicks": 9,
+      "ctr": 1.397516,
+      "cpc": 1172.444444,
+      "results": null,
+      "result_type": "messaging_conversations_started"
+    },
+    {
       "level": "adset",
       "account_id": "1411181790411470",
       "account_name": "Win 1",
@@ -73572,6 +73594,28 @@
       "ctr": 0.455647,
       "cpc": 28384.574468,
       "results": 1.0,
+      "result_type": "messaging_conversations_started"
+    },
+    {
+      "level": "ad",
+      "account_id": "1411181790411470",
+      "account_name": "Win 1",
+      "account_currency": "VND",
+      "campaign_id": "120240123543720036",
+      "campaign_name": "Tương tác Top",
+      "adset_id": "120240123543730036",
+      "adset_name": "1",
+      "ad_id": "120240123543740036",
+      "ad_name": "1",
+      "date_start": "2026-01-10",
+      "date_stop": "2026-01-10",
+      "spend": 7137.0,
+      "impressions": 464,
+      "reach": 460,
+      "clicks": 5,
+      "ctr": 1.077586,
+      "cpc": 1427.4,
+      "results": null,
       "result_type": "messaging_conversations_started"
     },
     {
