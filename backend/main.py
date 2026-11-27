@@ -1,6 +1,7 @@
 
 import logging
 import os
+import subprocess
 import sys
 import time
 
@@ -37,6 +38,15 @@ CHUNK_DAYS = int(
     os.getenv("INITIAL_SYNC_CHUNK_DAYS", "7")
 )
 
+# Commit sau mỗi 50 tác vụ thành công.
+COMMIT_EVERY_TASKS = int(
+    os.getenv("COMMIT_EVERY_TASKS", "50")
+)
+
+if COMMIT_EVERY_TASKS < 1:
+    raise ValueError("COMMIT_EVERY_TASKS phải lớn hơn 0.")
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -47,15 +57,116 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================
+# GITHUB PERIODIC COMMIT
+# =====================================
+
+def commit_progress():
+    """
+    Commit và push hai file JSON lên GitHub.
+
+    Chỉ thực hiện khi chạy trong GitHub Actions.
+    """
+
+    if os.getenv("GITHUB_ACTIONS") != "true":
+        logger.info(
+            "Không chạy trong GitHub Actions. "
+            "Bỏ qua Git commit."
+        )
+        return
+
+    logger.info("Bắt đầu commit dữ liệu lên GitHub...")
+
+    subprocess.run(
+        [
+            "git",
+            "config",
+            "user.name",
+            "github-actions[bot]",
+        ],
+        check=True,
+    )
+
+    subprocess.run(
+        [
+            "git",
+            "config",
+            "user.email",
+            "41898282+github-actions[bot]@users.noreply.github.com",
+        ],
+        check=True,
+    )
+
+    subprocess.run(
+        [
+            "git",
+            "add",
+            "docs/data/ads.json",
+            "docs/data/sync_state.json",
+        ],
+        check=True,
+    )
+
+    # Kiểm tra có dữ liệu thay đổi hay không.
+    result = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        check=False,
+    )
+
+    if result.returncode == 0:
+        logger.info("Không có thay đổi cần commit.")
+        return
+
+    if result.returncode != 1:
+        raise RuntimeError(
+            "Không thể kiểm tra thay đổi Git."
+        )
+
+    # Tạo commit.
+    subprocess.run(
+        [
+            "git",
+            "commit",
+            "-m",
+            "Periodic Meta Ads data checkpoint",
+        ],
+        check=True,
+    )
+
+    # Đồng bộ với nhánh main trước khi push.
+    subprocess.run(
+        [
+            "git",
+            "pull",
+            "--rebase",
+            "origin",
+            "main",
+        ],
+        check=True,
+    )
+
+    # Đẩy dữ liệu lên GitHub.
+    subprocess.run(
+        [
+            "git",
+            "push",
+            "origin",
+            "HEAD:main",
+        ],
+        check=True,
+    )
+
+    logger.info(
+        "Đã commit và push dữ liệu thành công."
+    )
+
+
+# =====================================
 # DATE HELPERS
 # =====================================
 
 def build_date_chunks(since, until, chunk_days=7):
     """
     Chia khoảng thời gian thành các đoạn ngày liên tiếp.
-    Ví dụ: 01-01 đến 14-01, chunk_days=7
-    -> 01-01 đến 07-01
-    -> 08-01 đến 14-01
     """
 
     start = date.fromisoformat(since)
@@ -123,18 +234,20 @@ def process_task(
         level=level,
     )
 
-    # Lưu ngay sau khi tác vụ này thành công.
+    # Đọc dữ liệu hiện có.
     existing_payload = load_ads()
 
+    # Gộp dữ liệu của đúng tài khoản, cấp và khoảng ngày.
     updated_payload = merge_ads(
-    existing_payload=existing_payload,
-    new_rows=normalized_rows,
-    accounts=[account],
-    since=since,
-    until=until,
-    levels=(level,),
-)
+        existing_payload=existing_payload,
+        new_rows=normalized_rows,
+        accounts=[account],
+        since=since,
+        until=until,
+        levels=(level,),
+    )
 
+    # Lưu dữ liệu sau mỗi tác vụ thành công.
     save_ads(updated_payload)
 
     logger.info(
@@ -192,7 +305,7 @@ def run_initial_sync(
 
     tasks = []
 
-    # Thứ tự tác vụ được giữ cố định giữa các lần chạy.
+    # Thứ tự tác vụ được giữ cố định.
     for account_id in account_ids:
 
         for level in AD_LEVELS:
@@ -219,10 +332,11 @@ def run_initial_sync(
     )
 
     total_rows = 0
+    completed_since_commit = 0
 
     while task_index < total_tasks:
 
-        # Chừa thời gian để GitHub commit dữ liệu.
+        # Chừa thời gian để commit dữ liệu.
         elapsed = time.monotonic() - start_time
 
         if elapsed >= PROCESS_BUDGET_SECONDS:
@@ -257,9 +371,13 @@ def run_initial_sync(
 
         state["initial_sync_task_index"] = task_index
         state["initial_sync_tasks_total"] = total_tasks
-        state["last_successful_sync"] = updated_payload["updated_at"]
+        state["last_successful_sync"] = (
+            updated_payload["updated_at"]
+        )
 
         save_sync_state(state)
+
+        completed_since_commit += 1
 
         logger.info(
             "Lịch sử: %s/%s tác vụ hoàn thành.",
@@ -267,9 +385,17 @@ def run_initial_sync(
             total_tasks,
         )
 
+        # Commit định kỳ sau mỗi nhóm tác vụ.
+        if completed_since_commit >= COMMIT_EVERY_TASKS:
+
+            commit_progress()
+
+            completed_since_commit = 0
+
     if task_index >= total_tasks:
 
         state["initial_sync_completed"] = True
+
         state["last_successful_sync"] = (
             load_ads()["updated_at"]
         )
@@ -295,6 +421,9 @@ def run_initial_sync(
             task_index,
             total_tasks,
         )
+
+    # Commit phần còn lại, kể cả chưa đủ 50 tác vụ.
+    commit_progress()
 
     return total_rows
 
@@ -349,6 +478,7 @@ def run_incremental_sync(
     )
 
     total_rows = 0
+    completed_since_commit = 0
 
     while task_index < total_tasks:
 
@@ -382,9 +512,26 @@ def run_incremental_sync(
 
         state["incremental_task_index"] = task_index
         state["incremental_tasks_total"] = total_tasks
-        state["last_successful_sync"] = updated_payload["updated_at"]
+        state["last_successful_sync"] = (
+            updated_payload["updated_at"]
+        )
 
         save_sync_state(state)
+
+        completed_since_commit += 1
+
+        logger.info(
+            "Đồng bộ định kỳ: %s/%s tác vụ hoàn thành.",
+            task_index,
+            total_tasks,
+        )
+
+        # Commit định kỳ sau mỗi nhóm tác vụ.
+        if completed_since_commit >= COMMIT_EVERY_TASKS:
+
+            commit_progress()
+
+            completed_since_commit = 0
 
     if task_index >= total_tasks:
 
@@ -416,6 +563,9 @@ def run_incremental_sync(
             total_tasks,
         )
 
+    # Commit phần còn lại, kể cả chưa đủ 50 tác vụ.
+    commit_progress()
+
     return total_rows
 
 
@@ -430,6 +580,11 @@ def run():
     logger.info("====================================")
     logger.info("META ADS DASHBOARD - START SYNC")
     logger.info("====================================")
+
+    logger.info(
+        "Commit checkpoint: mỗi %s tác vụ.",
+        COMMIT_EVERY_TASKS,
+    )
 
     validate_config()
 
@@ -486,14 +641,17 @@ def run():
     logger.info("SYNC RUN FINISHED")
     logger.info("Accounts available: %s", len(accounts))
     logger.info("Rows processed this run: %s", total_rows)
+
     logger.info(
         "Total stored rows: %s",
         len(final_payload.get("data", [])),
     )
+
     logger.info(
         "Initial sync completed: %s",
         state.get("initial_sync_completed", False),
     )
+
     logger.info("====================================")
 
 
@@ -505,83 +663,3 @@ if __name__ == "__main__":
     except Exception:
         logger.exception("META ADS SYNC FAILED")
         sys.exit(1)
-
-
-
-# ==========================================
-# PERIODIC GITHUB COMMIT
-# ==========================================
-
-COMMIT_EVERY_TASKS = int(
-    os.getenv("COMMIT_EVERY_TASKS", "50")
-)
-
-
-def commit_progress():
-    """
-    Commit và push dữ liệu JSON lên GitHub.
-    Chỉ thực hiện trong GitHub Actions.
-    """
-
-    if os.getenv("GITHUB_ACTIONS") != "true":
-        logging.info(
-            "Không chạy trong GitHub Actions. Bỏ qua Git commit."
-        )
-        return
-
-    logging.info("Bắt đầu commit dữ liệu lên GitHub...")
-
-    subprocess.run(
-        ["git", "config", "user.name", "github-actions[bot]"],
-        check=True,
-    )
-
-    subprocess.run(
-        [
-            "git", "config", "user.email",
-            "41898282+github-actions[bot]@users.noreply.github.com",
-        ],
-        check=True,
-    )
-
-    subprocess.run(
-        [
-            "git", "add",
-            "docs/data/ads.json",
-            "docs/data/sync_state.json",
-        ],
-        check=True,
-    )
-
-    # Không tạo commit nếu không có thay đổi
-    result = subprocess.run(
-        ["git", "diff", "--cached", "--quiet"]
-    )
-
-    if result.returncode == 0:
-        logging.info("Không có thay đổi cần commit.")
-        return
-
-    if result.returncode != 1:
-        raise RuntimeError("Không kiểm tra được Git diff.")
-
-    subprocess.run(
-        [
-            "git", "commit",
-            "-m", "Periodic Meta Ads data checkpoint",
-        ],
-        check=True,
-    )
-
-    subprocess.run(
-        ["git", "pull", "--rebase", "origin", "main"],
-        check=True,
-    )
-
-    subprocess.run(
-        ["git", "push", "origin", "HEAD:main"],
-        check=True,
-    )
-
-    logging.info("Đã commit và push dữ liệu thành công.")
-
