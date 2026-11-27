@@ -1,5 +1,5 @@
 
-name: Meta Ads Dashboard Sync
+name: Meta Ads Dashboard - Full Sync
 
 on:
   workflow_dispatch:
@@ -14,11 +14,17 @@ concurrency:
   group: meta-ads-dashboard-sync
   cancel-in-progress: false
 
+# ==========================================
+# JOB 1
+# ==========================================
 jobs:
-  sync:
-    name: Sync Meta Ads Data
+  sync_1:
+    name: Full Sync - Part 1
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 350
+
+    outputs:
+      initial_complete: ${{ steps.state.outputs.initial_complete }}
 
     env:
       META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
@@ -27,7 +33,7 @@ jobs:
       LOOKBACK_DAYS: "7"
       INITIAL_SYNC_DAYS: "365"
       INITIAL_SYNC_CHUNK_DAYS: "7"
-      PROCESS_BUDGET_SECONDS: "240"
+      PROCESS_BUDGET_SECONDS: "20400"
       API_PAGE_LIMIT: "500"
       MAX_RETRIES: "5"
       REQUEST_TIMEOUT: "90"
@@ -52,24 +58,209 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Meta Ads synchronization
-        run: |
-          python backend/main.py
+      - name: Run synchronization
+        run: python backend/main.py
 
-      - name: Commit updated JSON data
+      - name: Check initial sync status
+        id: state
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          with open("docs/data/sync_state.json", encoding="utf-8") as f:
+              state = json.load(f)
+
+          completed = str(
+              bool(state.get("initial_sync_completed", False))
+          ).lower()
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"initial_complete={completed}\n")
+
+          print("Initial sync completed:", completed)
+          PY
+
+      - name: Commit updated JSON
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add docs/data/ads.json
-          git add docs/data/sync_state.json
+          git add docs/data/ads.json docs/data/sync_state.json
 
           if git diff --cached --quiet; then
-            echo "No data changes to commit."
+            echo "No data changes."
             exit 0
           fi
 
-          git commit -m "Update Meta Ads dashboard data"
+          git commit -m "Meta Ads full sync - Part 1"
+          git pull --rebase origin main
+          git push origin HEAD:main
 
+  # ==========================================
+  # JOB 2
+  # ==========================================
+  sync_2:
+    name: Full Sync - Part 2
+    needs: sync_1
+    if: needs.sync_1.outputs.initial_complete != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    outputs:
+      initial_complete: ${{ steps.state.outputs.initial_complete }}
+
+    env:
+      META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+      META_API_VERSION: v25.0
+      RETENTION_DAYS: "365"
+      LOOKBACK_DAYS: "7"
+      INITIAL_SYNC_DAYS: "365"
+      INITIAL_SYNC_CHUNK_DAYS: "7"
+      PROCESS_BUDGET_SECONDS: "20400"
+      API_PAGE_LIMIT: "500"
+      MAX_RETRIES: "5"
+      REQUEST_TIMEOUT: "90"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Continue synchronization
+        run: python backend/main.py
+
+      - name: Check initial sync status
+        id: state
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          with open("docs/data/sync_state.json", encoding="utf-8") as f:
+              state = json.load(f)
+
+          completed = str(
+              bool(state.get("initial_sync_completed", False))
+          ).lower()
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"initial_complete={completed}\n")
+
+          print("Initial sync completed:", completed)
+          PY
+
+      - name: Commit updated JSON
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add docs/data/ads.json docs/data/sync_state.json
+
+          if git diff --cached --quiet; then
+            echo "No data changes."
+            exit 0
+          fi
+
+          git commit -m "Meta Ads full sync - Part 2"
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+  # ==========================================
+  # JOB 3
+  # ==========================================
+  sync_3:
+    name: Full Sync - Part 3
+    needs: sync_2
+    if: needs.sync_2.outputs.initial_complete != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    outputs:
+      initial_complete: ${{ steps.state.outputs.initial_complete }}
+
+    env:
+      META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+      META_API_VERSION: v25.0
+      RETENTION_DAYS: "365"
+      LOOKBACK_DAYS: "7"
+      INITIAL_SYNC_DAYS: "365"
+      INITIAL_SYNC_CHUNK_DAYS: "7"
+      PROCESS_BUDGET_SECONDS: "20400"
+      API_PAGE_LIMIT: "500"
+      MAX_RETRIES: "5"
+      REQUEST_TIMEOUT: "90"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Continue synchronization
+        run: python backend/main.py
+
+      - name: Check initial sync status
+        id: state
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          with open("docs/data/sync_state.json", encoding="utf-8") as f:
+              state = json.load(f)
+
+          completed = str(
+              bool(state.get("initial_sync_completed", False))
+          ).lower()
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"initial_complete={completed}\n")
+
+          print("Initial sync completed:", completed)
+          PY
+
+      - name: Commit updated JSON
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add docs/data/ads.json docs/data/sync_state.json
+
+          if git diff --cached --quiet; then
+            echo "No data changes."
+            exit 0
+          fi
+
+          git commit -m "Meta Ads full sync - Part 3"
           git pull --rebase origin main
           git push origin HEAD:main
