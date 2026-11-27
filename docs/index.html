@@ -1,0 +1,479 @@
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meta Ads Dashboard</title>
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    padding: 25px;
+    background: #f3f5f9;
+    color: #172033;
+    font-family: Arial, sans-serif;
+}
+
+.container {
+    max-width: 1450px;
+    margin: auto;
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 15px;
+    margin-bottom: 25px;
+}
+
+h1 { margin: 0; font-size: 25px; }
+
+.sub {
+    color: #7b8495;
+    margin-top: 8px;
+    font-size: 13px;
+}
+
+.filters {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+select, button {
+    padding: 11px 14px;
+    border: 1px solid #dce1e9;
+    border-radius: 8px;
+    background: white;
+    font-size: 13px;
+}
+
+button {
+    cursor: pointer;
+    background: #1877f2;
+    color: white;
+    border: none;
+}
+
+.cards {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 15px;
+    margin-bottom: 22px;
+}
+
+.card {
+    background: white;
+    padding: 22px;
+    border-radius: 12px;
+    box-shadow: 0 2px 12px #17203308;
+}
+
+.card-label {
+    font-size: 13px;
+    color: #7b8495;
+}
+
+.card-value {
+    font-size: 25px;
+    font-weight: 700;
+    margin-top: 12px;
+    word-break: break-word;
+}
+
+.panel {
+    background: white;
+    padding: 22px;
+    border-radius: 12px;
+    box-shadow: 0 2px 12px #17203308;
+}
+
+.panel-title {
+    font-size: 17px;
+    font-weight: bold;
+    margin-bottom: 18px;
+}
+
+.table-wrap {
+    overflow-x: auto;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 750px;
+}
+
+th, td {
+    padding: 14px 12px;
+    text-align: left;
+    border-bottom: 1px solid #edf0f4;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+th {
+    background: #f7f8fb;
+    color: #697386;
+}
+
+td:first-child {
+    font-weight: 600;
+}
+
+.status {
+    color: #16864a;
+    font-size: 13px;
+}
+
+.error {
+    color: #dc2626;
+    margin-top: 15px;
+}
+
+.footer {
+    text-align: center;
+    padding: 25px;
+    color: #9099a8;
+    font-size: 12px;
+}
+
+@media(max-width: 850px) {
+    body { padding: 14px; }
+    .cards { grid-template-columns: repeat(2, 1fr); }
+    .card { padding: 15px; }
+    .card-value { font-size: 19px; }
+}
+
+@media(max-width: 420px) {
+    .cards { grid-template-columns: 1fr 1fr; }
+}
+</style>
+</head>
+
+<body>
+<div class="container">
+
+    <div class="header">
+        <div>
+            <h1>Meta Ads Dashboard</h1>
+            <div class="sub" id="syncTime">
+                Đang kết nối dữ liệu...
+            </div>
+        </div>
+
+        <div class="filters">
+            <select id="accountFilter">
+                <option value="">Đang tải tài khoản...</option>
+            </select>
+
+            <select id="levelFilter">
+                <option value="campaign">Campaign</option>
+                <option value="adset">Ad Set</option>
+                <option value="ad">Ads</option>
+            </select>
+
+            <button onclick="loadData()">Làm mới</button>
+        </div>
+    </div>
+
+    <div class="cards">
+
+        <div class="card">
+            <div class="card-label">Tổng chi tiêu</div>
+            <div class="card-value" id="spend">---</div>
+        </div>
+
+        <div class="card">
+            <div class="card-label">Lượt hiển thị</div>
+            <div class="card-value" id="impressions">---</div>
+        </div>
+
+        <div class="card">
+            <div class="card-label">Lượt click</div>
+            <div class="card-value" id="clicks">---</div>
+        </div>
+
+        <div class="card">
+            <div class="card-label">Cuộc trò chuyện</div>
+            <div class="card-value" id="messages">---</div>
+        </div>
+
+    </div>
+
+    <div class="panel">
+
+        <div class="panel-title" id="tableTitle">
+            Chi tiết chiến dịch
+        </div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Tên quảng cáo</th>
+                        <th>Chi tiêu</th>
+                        <th>Hiển thị</th>
+                        <th>Click</th>
+                        <th>CTR</th>
+                        <th>Tin nhắn</th>
+                    </tr>
+                </thead>
+
+                <tbody id="tableBody">
+                    <tr>
+                        <td colspan="6">Đang tải...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div id="error" class="error"></div>
+
+    </div>
+
+    <div class="footer">
+        Meta Marketing API · Dashboard
+    </div>
+
+</div>
+
+<script>
+let DATA = null;
+
+const $ = id => document.getElementById(id);
+
+function number(v) {
+    return Number(v || 0);
+}
+
+function formatNumber(v) {
+    return new Intl.NumberFormat("vi-VN")
+        .format(Math.round(number(v)));
+}
+
+function formatMoney(v, currency) {
+    return new Intl.NumberFormat("vi-VN", {
+        style: "currency",
+        currency: currency || "VND",
+        maximumFractionDigits: 0
+    }).format(number(v));
+}
+
+function getMessages(actions) {
+    if (!Array.isArray(actions)) return 0;
+
+    return actions.reduce((sum, item) => {
+        const type = String(item.action_type || "");
+
+        if (type.includes("messaging_conversation_started")) {
+            return sum + number(item.value);
+        }
+
+        return sum;
+    }, 0);
+}
+
+async function loadData() {
+
+    $("error").textContent = "";
+
+    try {
+
+        const response = await fetch(
+            "./data/dashboard.json?t=" + Date.now(),
+            { cache: "no-store" }
+        );
+
+        if (!response.ok) {
+            throw new Error("Không đọc được dữ liệu Dashboard");
+        }
+
+        DATA = await response.json();
+
+        renderAccounts();
+        renderDashboard();
+
+    } catch (error) {
+
+        $("error").textContent = error.message;
+
+    }
+}
+
+function renderAccounts() {
+
+    const select = $("accountFilter");
+    const previous = select.value;
+
+    select.innerHTML = "";
+
+    DATA.accounts.forEach(account => {
+
+        const option = document.createElement("option");
+
+        option.value = String(account.account_id);
+        option.textContent =
+            account.name + " (" + account.currency + ")";
+
+        select.appendChild(option);
+
+    });
+
+    if (
+        previous &&
+        DATA.accounts.some(
+            a => String(a.account_id) === previous
+        )
+    ) {
+        select.value = previous;
+    }
+}
+
+function renderDashboard() {
+
+    const accountId = $("accountFilter").value;
+    const account = DATA.accounts.find(
+        a => String(a.account_id) === accountId
+    );
+
+    if (!account) return;
+
+    const currency = account.currency || "VND";
+    const level = $("levelFilter").value;
+
+    const rows = DATA.insights[level].filter(
+        r => String(r.account_id) === accountId
+    );
+
+    let total = {
+        spend: 0,
+        impressions: 0,
+        clicks: 0,
+        messages: 0
+    };
+
+    const groups = {};
+
+    rows.forEach(row => {
+
+        const id =
+            level === "campaign" ? row.campaign_id :
+            level === "adset" ? row.adset_id :
+            row.ad_id;
+
+        const name =
+            level === "campaign" ? row.campaign_name :
+            level === "adset" ? row.adset_name :
+            row.ad_name;
+
+        if (!groups[id]) {
+            groups[id] = {
+                id,
+                name: name || id,
+                spend: 0,
+                impressions: 0,
+                clicks: 0,
+                messages: 0
+            };
+        }
+
+        const item = groups[id];
+
+        item.spend += number(row.spend);
+        item.impressions += number(row.impressions);
+        item.clicks += number(row.clicks);
+        item.messages += getMessages(row.actions);
+
+        total.spend += number(row.spend);
+        total.impressions += number(row.impressions);
+        total.clicks += number(row.clicks);
+        total.messages += getMessages(row.actions);
+
+    });
+
+    $("spend").textContent =
+        formatMoney(total.spend, currency);
+
+    $("impressions").textContent =
+        formatNumber(total.impressions);
+
+    $("clicks").textContent =
+        formatNumber(total.clicks);
+
+    $("messages").textContent =
+        formatNumber(total.messages);
+
+    $("tableTitle").textContent =
+        "Chi tiết " +
+        (level === "campaign" ? "chiến dịch" :
+        level === "adset" ? "nhóm quảng cáo" :
+        "quảng cáo");
+
+    const list = Object.values(groups)
+        .sort((a, b) => b.spend - a.spend);
+
+    $("tableBody").innerHTML = "";
+
+    if (!list.length) {
+        $("tableBody").innerHTML =
+            '<tr><td colspan="6">Chưa có dữ liệu</td></tr>';
+    }
+
+    list.forEach(item => {
+
+        const ctr = item.impressions
+            ? item.clicks / item.impressions * 100
+            : 0;
+
+        const tr = document.createElement("tr");
+
+        const values = [
+            item.name,
+            formatMoney(item.spend, currency),
+            formatNumber(item.impressions),
+            formatNumber(item.clicks),
+            ctr.toFixed(2) + "%",
+            formatNumber(item.messages)
+        ];
+
+        values.forEach(value => {
+            const td = document.createElement("td");
+            td.textContent = value;
+            tr.appendChild(td);
+        });
+
+        $("tableBody").appendChild(tr);
+
+    });
+
+    $("syncTime").textContent =
+        "Đồng bộ: " +
+        new Date(DATA.generated_at).toLocaleString("vi-VN") +
+        " · " +
+        DATA.date_range.since +
+        " đến " +
+        DATA.date_range.until;
+
+}
+
+$("accountFilter").addEventListener(
+    "change", renderDashboard
+);
+
+$("levelFilter").addEventListener(
+    "change", renderDashboard
+);
+
+loadData();
+
+setInterval(loadData, 5 * 60 * 1000);
+</script>
+
+</body>
+</html>
