@@ -505,3 +505,83 @@ if __name__ == "__main__":
     except Exception:
         logger.exception("META ADS SYNC FAILED")
         sys.exit(1)
+
+
+
+# ==========================================
+# PERIODIC GITHUB COMMIT
+# ==========================================
+
+COMMIT_EVERY_TASKS = int(
+    os.getenv("COMMIT_EVERY_TASKS", "50")
+)
+
+
+def commit_progress():
+    """
+    Commit và push dữ liệu JSON lên GitHub.
+    Chỉ thực hiện trong GitHub Actions.
+    """
+
+    if os.getenv("GITHUB_ACTIONS") != "true":
+        logging.info(
+            "Không chạy trong GitHub Actions. Bỏ qua Git commit."
+        )
+        return
+
+    logging.info("Bắt đầu commit dữ liệu lên GitHub...")
+
+    subprocess.run(
+        ["git", "config", "user.name", "github-actions[bot]"],
+        check=True,
+    )
+
+    subprocess.run(
+        [
+            "git", "config", "user.email",
+            "41898282+github-actions[bot]@users.noreply.github.com",
+        ],
+        check=True,
+    )
+
+    subprocess.run(
+        [
+            "git", "add",
+            "docs/data/ads.json",
+            "docs/data/sync_state.json",
+        ],
+        check=True,
+    )
+
+    # Không tạo commit nếu không có thay đổi
+    result = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"]
+    )
+
+    if result.returncode == 0:
+        logging.info("Không có thay đổi cần commit.")
+        return
+
+    if result.returncode != 1:
+        raise RuntimeError("Không kiểm tra được Git diff.")
+
+    subprocess.run(
+        [
+            "git", "commit",
+            "-m", "Periodic Meta Ads data checkpoint",
+        ],
+        check=True,
+    )
+
+    subprocess.run(
+        ["git", "pull", "--rebase", "origin", "main"],
+        check=True,
+    )
+
+    subprocess.run(
+        ["git", "push", "origin", "HEAD:main"],
+        check=True,
+    )
+
+    logging.info("Đã commit và push dữ liệu thành công.")
+
