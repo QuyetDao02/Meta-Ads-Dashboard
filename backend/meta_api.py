@@ -34,11 +34,11 @@ class MetaAPIClient:
         })
 
     
-def _request(
-    self,
-    url: str,
-    params: Optional[dict] = None,
-) -> dict:
+    def _request(
+        self,
+        url: str,
+        params: Optional[dict] = None,
+    ) -> dict:
 
     request_params = dict(params or {})
 
