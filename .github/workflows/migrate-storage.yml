@@ -1,0 +1,49 @@
+
+name: Migrate Meta Ads JSON Storage
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    name: Convert ads.json to monthly JSON files
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run migration
+        run: python backend/migrate_storage.py
+
+      - name: Commit migrated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A docs/data/
+
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo "No changes."
+            exit 0
+          fi
+
+          git commit -m "Migrate Meta Ads storage to monthly JSON shards"
+
+          git pull --rebase origin main
+
+          git push origin HEAD:main
