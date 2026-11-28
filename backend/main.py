@@ -5,7 +5,7 @@ import subprocess
 import sys
 import time
 
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 
 from config import (
     AD_LEVELS,
@@ -18,11 +18,12 @@ from config import (
 from meta_api import MetaAPIClient
 from processor import normalize_insights
 from storage import (
-    load_ads,
     load_sync_state,
-    merge_ads,
-    save_ads,
     save_sync_state,
+    save_accounts,
+    update_ads,
+    prune_expired_data,
+    get_storage_stats,
 )
 
 
@@ -100,8 +101,7 @@ def commit_progress():
         [
             "git",
             "add",
-            "docs/data/ads.json",
-            "docs/data/sync_state.json",
+            "docs/data/",
         ],
         check=True,
     )
@@ -203,13 +203,14 @@ def get_account_map(accounts):
 # PROCESS ONE TASK
 # =====================================
 
+
 def process_task(
     client,
     account,
     level,
     since,
     until,
-    accounts,
+    accounts=None,
 ):
     account_id = account["account_id"]
 
@@ -234,21 +235,14 @@ def process_task(
         level=level,
     )
 
-    # Đọc dữ liệu hiện có.
-    existing_payload = load_ads()
-
-    # Gộp dữ liệu của đúng tài khoản, cấp và khoảng ngày.
-    updated_payload = merge_ads(
-        existing_payload=existing_payload,
+    # Chỉ cập nhật các file tháng liên quan.
+    updated_at = update_ads(
+        account=account,
         new_rows=normalized_rows,
-        accounts=[account],
         since=since,
         until=until,
-        levels=(level,),
+        level=level,
     )
-
-    # Lưu dữ liệu sau mỗi tác vụ thành công.
-    save_ads(updated_payload)
 
     logger.info(
         "Đã lưu: account=%s | level=%s | %s bản ghi",
@@ -257,7 +251,8 @@ def process_task(
         len(normalized_rows),
     )
 
-    return len(normalized_rows), updated_payload
+    return len(normalized_rows), updated_at
+
 
 
 # =====================================
@@ -355,7 +350,7 @@ def run_initial_sync(
                 "Không thể tiếp tục tiến độ lịch sử."
             )
 
-        rows_count, updated_payload = process_task(
+        rows_count, updated_at = process_task(
             client=client,
             account=account,
             level=level,
@@ -371,8 +366,7 @@ def run_initial_sync(
 
         state["initial_sync_task_index"] = task_index
         state["initial_sync_tasks_total"] = total_tasks
-        state["last_successful_sync"] = (
-            updated_payload["updated_at"]
+        state["last_successful_sync"] = updated_at
         )
 
         save_sync_state(state)
@@ -396,9 +390,9 @@ def run_initial_sync(
 
         state["initial_sync_completed"] = True
 
-        state["last_successful_sync"] = (
-            load_ads()["updated_at"]
-        )
+        state["last_successful_sync"] = datetime.now(
+            timezone.utc
+        ).isoformat()
 
         state.pop("initial_sync_account_ids", None)
         state.pop("initial_sync_task_index", None)
@@ -497,7 +491,7 @@ def run_incremental_sync(
                 "trong danh sách truy cập được."
             )
 
-        rows_count, updated_payload = process_task(
+        rows_count, updated_at = process_task(
             client=client,
             account=account,
             level=level,
@@ -512,8 +506,7 @@ def run_incremental_sync(
 
         state["incremental_task_index"] = task_index
         state["incremental_tasks_total"] = total_tasks
-        state["last_successful_sync"] = (
-            updated_payload["updated_at"]
+        state["last_successful_sync"] = updated_at
         )
 
         save_sync_state(state)
@@ -535,9 +528,9 @@ def run_incremental_sync(
 
     if task_index >= total_tasks:
 
-        state["last_successful_sync"] = (
-            load_ads()["updated_at"]
-        )
+        state["last_successful_sync"] = datetime.now(
+            timezone.utc
+        ).isoformat()
 
         state["last_sync_since"] = since
         state["last_sync_until"] = until
@@ -609,6 +602,11 @@ def run():
         "Tìm thấy %s tài khoản quảng cáo.",
         len(accounts),
     )
+    # Lưu danh sách tài khoản riêng.
+    save_accounts(accounts)
+    
+    # Dọn dữ liệu đã quá 365 ngày.
+    prune_expired_data()
 
     state = load_sync_state()
 
@@ -635,7 +633,7 @@ def run():
             start_time=start_time,
         )
 
-    final_payload = load_ads()
+    stats = get_storage_stats()
 
     logger.info("====================================")
     logger.info("SYNC RUN FINISHED")
@@ -644,7 +642,17 @@ def run():
 
     logger.info(
         "Total stored rows: %s",
-        len(final_payload.get("data", [])),
+        stats["rows"],
+    )
+    
+    logger.info(
+        "Total JSON files: %s",
+        stats["files"],
+    )
+    
+    logger.info(
+        "Total storage size: %.2f MB",
+        stats["bytes"] / (1024 * 1024),
     )
 
     logger.info(
