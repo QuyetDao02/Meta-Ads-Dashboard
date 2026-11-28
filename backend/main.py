@@ -367,7 +367,7 @@ def run_initial_sync(
         state["initial_sync_task_index"] = task_index
         state["initial_sync_tasks_total"] = total_tasks
         state["last_successful_sync"] = updated_at
-        )
+        
 
         save_sync_state(state)
 
@@ -507,7 +507,7 @@ def run_incremental_sync(
         state["incremental_task_index"] = task_index
         state["incremental_tasks_total"] = total_tasks
         state["last_successful_sync"] = updated_at
-        )
+        
 
         save_sync_state(state)
 
