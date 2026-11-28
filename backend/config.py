@@ -33,7 +33,7 @@ INITIAL_SYNC_DAYS = int(
 API_PAGE_LIMIT = int(os.getenv("API_PAGE_LIMIT", "500"))
 
 # Giới hạn retry khi Meta API lỗi tạm thời
-MAX_RETRIES = int(os.getenv("MAX_RETRIES", "5"))
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "10"))
 
 # Thời gian chờ request
 REQUEST_TIMEOUT = int(
