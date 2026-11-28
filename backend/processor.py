@@ -1,9 +1,8 @@
 
-from typing import Any, Dict, List, Optional
+from datetime import date
+from typing import Any, List, Optional
 
 
-# Chỉ chọn một nhóm kết quả thống nhất:
-# số cuộc trò chuyện bắt đầu qua quảng cáo.
 MESSAGE_ACTION_TYPES = (
     "onsite_conversion.messaging_conversation_started_7d",
     "messaging_conversation_started_7d",
@@ -12,8 +11,10 @@ MESSAGE_ACTION_TYPES = (
 )
 
 
+VALID_LEVELS = ("campaign", "adset", "ad")
+
+
 def to_number(value: Any) -> Optional[float]:
-    """Chuyển dữ liệu Meta dạng chuỗi thành số."""
     if value is None or value == "":
         return None
 
@@ -29,10 +30,6 @@ def to_integer(value: Any) -> int:
 
 
 def get_message_results(actions: Any):
-    """
-    Lấy số cuộc trò chuyện bắt đầu.
-    Không cộng các loại hành động khác nhau vào cùng một kết quả.
-    """
     if not isinstance(actions, list):
         return None, "messaging_conversations_started"
 
@@ -63,7 +60,9 @@ def normalize_insight(
     account: dict,
     level: str,
 ) -> dict:
-    """Chuẩn hóa một dòng Insights thành cấu trúc Dashboard."""
+
+    if level not in VALID_LEVELS:
+        raise ValueError(f"Level không hợp lệ: {level}")
 
     account_id = str(
         row.get("account_id")
@@ -71,13 +70,19 @@ def normalize_insight(
         or ""
     )
 
-    account_name = (
-        row.get("account_name")
-        or account.get("name")
-        or ""
-    )
+    if not account_id.isdigit():
+        raise ValueError(
+            f"Account ID không hợp lệ: {account_id}"
+        )
 
-    currency = account.get("currency", "")
+    date_start = str(row.get("date_start") or "")
+
+    try:
+        date.fromisoformat(date_start)
+    except ValueError as exc:
+        raise ValueError(
+            f"Ngày date_start không hợp lệ: {date_start}"
+        ) from exc
 
     results, result_type = get_message_results(
         row.get("actions")
@@ -87,8 +92,12 @@ def normalize_insight(
         "level": level,
 
         "account_id": account_id,
-        "account_name": account_name,
-        "account_currency": currency,
+        "account_name": (
+            row.get("account_name")
+            or account.get("name")
+            or ""
+        ),
+        "account_currency": account.get("currency", ""),
 
         "campaign_id": str(row.get("campaign_id") or ""),
         "campaign_name": row.get("campaign_name") or "",
@@ -99,7 +108,7 @@ def normalize_insight(
         "ad_id": str(row.get("ad_id") or ""),
         "ad_name": row.get("ad_name") or "",
 
-        "date_start": row.get("date_start", ""),
+        "date_start": date_start,
         "date_stop": row.get("date_stop", ""),
 
         "spend": to_number(row.get("spend")) or 0,
@@ -122,7 +131,9 @@ def normalize_insights(
     account: dict,
     level: str,
 ) -> List[dict]:
-    """Chuẩn hóa danh sách Insights."""
+
+    if level not in VALID_LEVELS:
+        raise ValueError(f"Level không hợp lệ: {level}")
 
     output = []
 
@@ -132,10 +143,6 @@ def normalize_insights(
             account=account,
             level=level,
         )
-
-        # Bỏ dòng không có ngày hoặc ID cấp quảng cáo.
-        if not item["date_start"]:
-            continue
 
         if level == "campaign" and not item["campaign_id"]:
             continue
@@ -152,14 +159,16 @@ def normalize_insights(
 
 
 def make_record_key(row: dict) -> str:
-    """
-    Khóa duy nhất của một bản ghi:
-    tài khoản + cấp + ID đối tượng + ngày.
-    """
 
     level = row.get("level", "")
-    account_id = row.get("account_id", "")
-    date = row.get("date_start", "")
+    account_id = str(row.get("account_id", ""))
+    date_start = str(row.get("date_start", ""))
+
+    if level not in VALID_LEVELS:
+        return ""
+
+    if not account_id or not date_start:
+        return ""
 
     object_id = {
         "campaign": row.get("campaign_id", ""),
@@ -167,9 +176,12 @@ def make_record_key(row: dict) -> str:
         "ad": row.get("ad_id", ""),
     }.get(level, "")
 
+    if not object_id:
+        return ""
+
     return "|".join([
-        str(account_id),
-        str(level),
+        account_id,
+        level,
         str(object_id),
-        str(date),
+        date_start,
     ])
