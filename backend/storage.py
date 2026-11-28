@@ -2,12 +2,13 @@
 import json
 import logging
 import os
+import re
 import tempfile
-from datetime import datetime, timezone
-from typing import Dict, List
+from datetime import date, datetime, timedelta, timezone
 
 from config import (
-    ADS_DATA_FILE,
+    ADS_DATA_DIR,
+    ACCOUNTS_DATA_FILE,
     RETENTION_DAYS,
     SYNC_STATE_FILE,
     retention_cutoff,
@@ -17,8 +18,11 @@ from processor import make_record_key
 logger = logging.getLogger(__name__)
 
 
-def _read_json(path: str, default):
-    """Đọc JSON. Nếu file không tồn tại thì dùng giá trị mặc định."""
+# =====================================
+# JSON HELPERS
+# =====================================
+
+def _read_json(path, default):
     if not os.path.exists(path):
         return default
 
@@ -26,57 +30,12 @@ def _read_json(path: str, default):
         with open(path, "r", encoding="utf-8") as file:
             return json.load(file)
     except (json.JSONDecodeError, OSError) as exc:
-        # Không tự tạo file rỗng khi JSON lỗi vì có thể làm mất dữ liệu.
         raise RuntimeError(
             f"Không đọc được JSON {path}: {exc}"
         ) from exc
 
 
-def load_ads():
-    """Đọc kho dữ liệu quảng cáo hiện tại."""
-    payload = _read_json(
-        ADS_DATA_FILE,
-        {
-            "updated_at": None,
-            "retention_days": RETENTION_DAYS,
-            "accounts": [],
-            "data": [],
-        },
-    )
-
-    if not isinstance(payload, dict):
-        raise RuntimeError("Cấu trúc ads.json không hợp lệ.")
-
-    if not isinstance(payload.get("data", []), list):
-        raise RuntimeError("ads.json: trường data phải là danh sách.")
-
-    if not isinstance(payload.get("accounts", []), list):
-        raise RuntimeError("ads.json: trường accounts phải là danh sách.")
-
-    return payload
-
-
-def load_sync_state():
-    """Đọc trạng thái đồng bộ."""
-    state = _read_json(
-        SYNC_STATE_FILE,
-        {
-            "initial_sync_completed": False,
-            "last_successful_sync": None,
-        },
-    )
-
-    if not isinstance(state, dict):
-        raise RuntimeError("Cấu trúc sync_state.json không hợp lệ.")
-
-    return state
-
-
-def _atomic_write_json(path: str, payload: dict):
-    """
-    Ghi JSON an toàn:
-    ghi file tạm trước, sau đó thay thế file chính.
-    """
+def _atomic_write_json(path, payload):
     directory = os.path.dirname(path)
     os.makedirs(directory, exist_ok=True)
 
@@ -92,7 +51,7 @@ def _atomic_write_json(path: str, payload: dict):
                 payload,
                 file,
                 ensure_ascii=False,
-                indent=2,
+                separators=(",", ":"),
             )
             file.write("\n")
 
@@ -104,130 +63,492 @@ def _atomic_write_json(path: str, payload: dict):
         raise
 
 
-def save_ads(payload: dict):
-    _atomic_write_json(ADS_DATA_FILE, payload)
+# =====================================
+# FILE PATH
+# =====================================
 
+def _account_month_file(account_id, month):
+    account_id = str(account_id)
 
-def save_sync_state(state: dict):
-    _atomic_write_json(SYNC_STATE_FILE, state)
-
-
-
-def merge_ads(
-    existing_payload: dict,
-    new_rows: List[dict],
-    accounts: List[dict],
-    since: str,
-    until: str,
-    levels: tuple,
-):
-    """
-    Cập nhật kho JSON an toàn.
-
-    - Chỉ xóa dữ liệu của tài khoản thực sự đang đồng bộ.
-    - Chỉ xóa đúng cấp dữ liệu và khoảng ngày được làm mới.
-    - Chèn dữ liệu mới.
-    - Chống trùng bằng record key.
-    - Giữ dữ liệu ngoài phạm vi đồng bộ.
-    - Loại dữ liệu quá thời hạn lưu trữ.
-    """
-
-    existing_rows = existing_payload.get("data", [])
-
-    refreshed_account_ids = {
-        str(account.get("account_id", ""))
-        for account in accounts
-        if account.get("account_id")
-    }
-
-    refreshed_levels = set(levels)
-
-    merged = {}
-
-    # Giữ dữ liệu không nằm trong phạm vi đồng bộ.
-    for row in existing_rows:
-
-        account_id = str(row.get("account_id", ""))
-        level = row.get("level", "")
-        row_date = row.get("date_start", "")
-
-        is_refreshed = (
-            account_id in refreshed_account_ids
-            and level in refreshed_levels
-            and since <= row_date <= until
+    if not re.fullmatch(r"[0-9]+", account_id):
+        raise ValueError(
+            f"Account ID không hợp lệ: {account_id}"
         )
 
-        if is_refreshed:
-            continue
-
-        key = make_record_key(row)
-        merged[key] = row
-
-    # Thêm dữ liệu mới từ Meta.
-    for row in new_rows:
-
-        key = make_record_key(row)
-
-        if key:
-            merged[key] = row
-
-    # Lọc dữ liệu còn trong thời hạn lưu trữ.
-    cutoff = retention_cutoff()
-
-    retained_rows = [
-        row
-        for row in merged.values()
-        if row.get("date_start", "") >= cutoff
-    ]
-
-    # Sắp xếp dữ liệu.
-    retained_rows.sort(
-        key=lambda row: (
-            row.get("date_start", ""),
-            row.get("account_id", ""),
-            row.get("level", ""),
-            row.get("campaign_id", ""),
-            row.get("adset_id", ""),
-            row.get("ad_id", ""),
+    if not re.fullmatch(r"\d{4}-\d{2}", month):
+        raise ValueError(
+            f"Tháng không hợp lệ: {month}"
         )
+
+    account_dir = os.path.join(
+        ADS_DATA_DIR,
+        account_id,
     )
 
-    # Cập nhật thông tin tài khoản.
+    return os.path.join(
+        account_dir,
+        f"{month}.json",
+    )
+
+
+def _month_range(since, until):
+    start = date.fromisoformat(since)
+    end = date.fromisoformat(until)
+
+    if start > end:
+        raise ValueError("since không được lớn hơn until.")
+
+    current = date(start.year, start.month, 1)
+    last = date(end.year, end.month, 1)
+
+    while current <= last:
+        yield current.strftime("%Y-%m")
+
+        if current.month == 12:
+            current = date(current.year + 1, 1, 1)
+        else:
+            current = date(
+                current.year,
+                current.month + 1,
+                1,
+            )
+
+
+# =====================================
+# ACCOUNT STORAGE
+# =====================================
+
+def save_accounts(accounts):
     account_map = {}
 
-    for account in existing_payload.get("accounts", []):
-
-        account_id = str(account.get("account_id", ""))
-
-        if account_id:
-            account_map[account_id] = account
-
     for account in accounts:
-
-        account_id = str(account.get("account_id", ""))
+        account_id = str(
+            account.get("account_id", "")
+        )
 
         if account_id:
             account_map[account_id] = account
 
-    result = {
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "retention_days": RETENTION_DAYS,
+    payload = {
+        "updated_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "total_accounts": len(account_map),
         "accounts": sorted(
             account_map.values(),
             key=lambda item: str(
                 item.get("name", "")
             ).lower(),
         ),
-        "data": retained_rows,
     }
 
-    logger.info(
-        "Kho dữ liệu: %s bản ghi trước, "
-        "%s bản ghi mới, %s bản ghi sau cập nhật.",
-        len(existing_rows),
-        len(new_rows),
-        len(retained_rows),
+    _atomic_write_json(
+        ACCOUNTS_DATA_FILE,
+        payload,
     )
 
-    return result
+    logger.info(
+        "Đã lưu danh sách %s tài khoản.",
+        len(account_map),
+    )
 
+
+def load_accounts():
+    payload = _read_json(
+        ACCOUNTS_DATA_FILE,
+        {
+            "updated_at": None,
+            "total_accounts": 0,
+            "accounts": [],
+        },
+    )
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            "accounts.json không hợp lệ."
+        )
+
+    accounts = payload.get("accounts", [])
+
+    if not isinstance(accounts, list):
+        raise RuntimeError(
+            "accounts.json: accounts phải là danh sách."
+        )
+
+    return payload
+
+
+# =====================================
+# SYNC STATE
+# =====================================
+
+def load_sync_state():
+    state = _read_json(
+        SYNC_STATE_FILE,
+        {
+            "initial_sync_completed": False,
+            "last_successful_sync": None,
+        },
+    )
+
+    if not isinstance(state, dict):
+        raise RuntimeError(
+            "Cấu trúc sync_state.json không hợp lệ."
+        )
+
+    return state
+
+
+def save_sync_state(state):
+    _atomic_write_json(
+        SYNC_STATE_FILE,
+        state,
+    )
+
+
+# =====================================
+# READ ONE ACCOUNT / MONTH
+# =====================================
+
+def load_month_data(account_id, month):
+    path = _account_month_file(
+        account_id,
+        month,
+    )
+
+    payload = _read_json(
+        path,
+        {
+            "account_id": str(account_id),
+            "month": month,
+            "updated_at": None,
+            "data": [],
+        },
+    )
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"File dữ liệu không hợp lệ: {path}"
+        )
+
+    rows = payload.get("data", [])
+
+    if not isinstance(rows, list):
+        raise RuntimeError(
+            f"Trường data không hợp lệ: {path}"
+        )
+
+    return payload
+
+
+# =====================================
+# UPDATE ONE ACCOUNT / DATE RANGE
+# =====================================
+
+def update_ads(
+    account,
+    new_rows,
+    since,
+    until,
+    level,
+):
+    """
+    Chỉ cập nhật những file tháng thuộc:
+    - Tài khoản đang đồng bộ.
+    - Cấp dữ liệu đang đồng bộ.
+    - Khoảng ngày đang đồng bộ.
+    """
+
+    account_id = str(
+        account.get("account_id", "")
+    )
+
+    if not account_id:
+        raise ValueError("Thiếu account_id.")
+
+    if level not in ("campaign", "adset", "ad"):
+        raise ValueError(f"Level không hợp lệ: {level}")
+
+    if date.fromisoformat(since) > date.fromisoformat(until):
+        raise ValueError("Khoảng ngày không hợp lệ.")
+
+    new_rows_by_month = {}
+
+    for row in new_rows:
+        row_date = str(row.get("date_start", ""))
+
+        if not row_date:
+            continue
+
+        if not since <= row_date <= until:
+            continue
+
+        month = row_date[:7]
+
+        new_rows_by_month.setdefault(
+            month,
+            [],
+        ).append(row)
+
+    total_before = 0
+    total_new = 0
+    total_after = 0
+
+    for month in _month_range(since, until):
+
+        path = _account_month_file(
+            account_id,
+            month,
+        )
+
+        payload = load_month_data(
+            account_id,
+            month,
+        )
+
+        existing_rows = payload.get("data", [])
+
+        total_before += len(existing_rows)
+
+        merged = {}
+
+        # Giữ dữ liệu ngoài phạm vi làm mới.
+        for row in existing_rows:
+
+            row_date = str(
+                row.get("date_start", "")
+            )
+
+            is_refreshed = (
+                str(row.get("account_id", "")) == account_id
+                and row.get("level") == level
+                and since <= row_date <= until
+            )
+
+            if is_refreshed:
+                continue
+
+            key = make_record_key(row)
+
+            if key:
+                merged[key] = row
+
+        # Thêm dữ liệu mới.
+        month_new_rows = new_rows_by_month.get(
+            month,
+            [],
+        )
+
+        for row in month_new_rows:
+
+            key = make_record_key(row)
+
+            if key:
+                merged[key] = row
+
+        # Loại dữ liệu quá hạn.
+        cutoff = retention_cutoff()
+
+        retained_rows = [
+            row
+            for row in merged.values()
+            if str(row.get("date_start", "")) >= cutoff
+        ]
+
+        retained_rows.sort(
+            key=lambda row: (
+                row.get("date_start", ""),
+                row.get("level", ""),
+                row.get("campaign_id", ""),
+                row.get("adset_id", ""),
+                row.get("ad_id", ""),
+            )
+        )
+
+        updated_payload = {
+            "account_id": account_id,
+            "month": month,
+            "updated_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "data": retained_rows,
+        }
+
+        _atomic_write_json(
+            path,
+            updated_payload,
+        )
+
+        total_new += len(month_new_rows)
+        total_after += len(retained_rows)
+
+        logger.info(
+            "Đã lưu phân mảnh: account=%s | month=%s | "
+            "level=%s | %s bản ghi",
+            account_id,
+            month,
+            level,
+            len(retained_rows),
+        )
+
+    updated_at = datetime.now(
+        timezone.utc
+    ).isoformat()
+
+    logger.info(
+        "Cập nhật phân mảnh: account=%s | level=%s | "
+        "dữ liệu mới=%s",
+        account_id,
+        level,
+        total_new,
+    )
+
+    return updated_at
+
+
+# =====================================
+# RETENTION CLEANUP
+# =====================================
+
+def prune_expired_data():
+    """
+    Xóa file tháng đã cũ hơn thời hạn lưu trữ.
+    Với tháng chứa ngày cutoff, lọc từng bản ghi.
+    """
+
+    if not os.path.isdir(ADS_DATA_DIR):
+        return
+
+    cutoff = retention_cutoff()
+    cutoff_month = cutoff[:7]
+
+    deleted_files = 0
+    deleted_rows = 0
+
+    for account_id in os.listdir(ADS_DATA_DIR):
+
+        account_dir = os.path.join(
+            ADS_DATA_DIR,
+            account_id,
+        )
+
+        if not os.path.isdir(account_dir):
+            continue
+
+        for filename in os.listdir(account_dir):
+
+            if not filename.endswith(".json"):
+                continue
+
+            month = filename[:-5]
+
+            if not re.fullmatch(r"\d{4}-\d{2}", month):
+                continue
+
+            path = os.path.join(
+                account_dir,
+                filename,
+            )
+
+            if month < cutoff_month:
+                os.remove(path)
+                deleted_files += 1
+                continue
+
+            if month == cutoff_month:
+
+                payload = _read_json(
+                    path,
+                    {"data": []},
+                )
+
+                old_rows = payload.get("data", [])
+
+                retained = [
+                    row
+                    for row in old_rows
+                    if str(row.get("date_start", "")) >= cutoff
+                ]
+
+                deleted_rows += (
+                    len(old_rows) - len(retained)
+                )
+
+                if retained:
+                    payload["data"] = retained
+                    payload["updated_at"] = datetime.now(
+                        timezone.utc
+                    ).isoformat()
+
+                    _atomic_write_json(
+                        path,
+                        payload,
+                    )
+                else:
+                    os.remove(path)
+                    deleted_files += 1
+
+    logger.info(
+        "Dọn dữ liệu quá hạn: %s file, %s bản ghi.",
+        deleted_files,
+        deleted_rows,
+    )
+
+
+# =====================================
+# STORAGE STATISTICS
+# =====================================
+
+def get_storage_stats():
+    total_rows = 0
+    total_files = 0
+    total_bytes = 0
+
+    if not os.path.isdir(ADS_DATA_DIR):
+        return {
+            "rows": 0,
+            "files": 0,
+            "bytes": 0,
+        }
+
+    for account_id in os.listdir(ADS_DATA_DIR):
+
+        account_dir = os.path.join(
+            ADS_DATA_DIR,
+            account_id,
+        )
+
+        if not os.path.isdir(account_dir):
+            continue
+
+        for filename in os.listdir(account_dir):
+
+            if not filename.endswith(".json"):
+                continue
+
+            path = os.path.join(
+                account_dir,
+                filename,
+            )
+
+            payload = _read_json(
+                path,
+                {"data": []},
+            )
+
+            rows = payload.get("data", [])
+
+            if not isinstance(rows, list):
+                raise RuntimeError(
+                    f"Dữ liệu không hợp lệ: {path}"
+                )
+
+            total_rows += len(rows)
+            total_files += 1
+            total_bytes += os.path.getsize(path)
+
+    return {
+        "rows": total_rows,
+        "files": total_files,
+        "bytes": total_bytes,
+    }
