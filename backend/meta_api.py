@@ -1,10 +1,10 @@
-
+import requests
 import json
 import logging
 import random
 import time
 from typing import Iterator, List, Optional
-
+from urllib.parse import parse_qs, urlsplit
 import requests
 
 from config import (
@@ -49,7 +49,18 @@ class MetaAPIClient:
 
         request_params = dict(params or {})
 
-        if "access_token" not in request_params:
+        try:
+            url_has_token = bool(
+                parse_qs(
+                    urlsplit(url).query
+                ).get("access_token")
+            )
+        except ValueError as exc:
+            raise MetaAPIError(
+                "URL Meta API không hợp lệ."
+            ) from exc
+        
+        if "access_token" not in request_params and not url_has_token:
             request_params["access_token"] = META_ACCESS_TOKEN
 
         permanent_codes = {
@@ -221,6 +232,45 @@ class MetaAPIClient:
             "Meta API thất bại sau nhiều lần thử."
         )
 
+        # =====================================
+    # PAGINATION URL VALIDATION
+    # =====================================
+
+    @staticmethod
+    def _validate_next_url(next_url: str) -> None:
+
+        if not isinstance(next_url, str) or not next_url:
+            raise MetaAPIError(
+                "URL phân trang không hợp lệ."
+            )
+
+        try:
+            parsed = urlsplit(next_url)
+            expected = urlsplit(GRAPH_API_BASE)
+
+            port = parsed.port
+
+        except ValueError as exc:
+            raise MetaAPIError(
+                "Không phân tích được URL phân trang."
+            ) from exc
+
+        expected_path = expected.path.rstrip("/") + "/"
+
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "graph.facebook.com"
+            or port not in (None, 443)
+            or parsed.username is not None
+            or parsed.password is not None
+            or not parsed.path.startswith(expected_path)
+            or parsed.fragment
+        ):
+            raise MetaAPIError(
+                "Từ chối URL phân trang không thuộc "
+                "Meta Graph API hợp lệ."
+            )
+
     # =====================================
     # PAGINATION
     # =====================================
@@ -238,6 +288,8 @@ class MetaAPIClient:
 
         while next_url:
 
+            self._validate_next_url(next_url)
+
             if next_url in visited_urls:
                 raise MetaAPIError(
                     "Meta API trả về URL phân trang bị lặp."
@@ -250,12 +302,35 @@ class MetaAPIClient:
                 next_params,
             )
 
-            for item in payload.get("data", []):
+            data = payload.get("data")
+
+            if not isinstance(data, list):
+                raise MetaAPIError(
+                    "Meta API trả về data không phải danh sách. "
+                    "Không thể xác nhận dữ liệu đầy đủ."
+                )
+
+            for item in data:
+
+                if not isinstance(item, dict):
+                    raise MetaAPIError(
+                        "Meta API trả về bản ghi không hợp lệ."
+                    )
+
                 yield item
 
             paging = payload.get("paging") or {}
 
+            if not isinstance(paging, dict):
+                raise MetaAPIError(
+                    "Cấu trúc paging không hợp lệ."
+                )
+
             next_url = paging.get("next")
+
+            if next_url is not None:
+                self._validate_next_url(next_url)
+
             next_params = None
 
     # =====================================
