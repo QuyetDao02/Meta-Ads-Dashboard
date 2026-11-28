@@ -275,16 +275,37 @@ def update_ads(
     new_rows_by_month = {}
 
     for row in new_rows:
+
+        row_account_id = str(row.get("account_id", ""))
+        row_level = row.get("level")
         row_date = str(row.get("date_start", ""))
-
-        if not row_date:
-            continue
-
+    
+        if row_account_id != account_id:
+            raise ValueError(
+                f"Sai account_id: mong đợi {account_id}, "
+                f"nhận được {row_account_id}"
+            )
+    
+        if row_level != level:
+            raise ValueError(
+                f"Sai level: mong đợi {level}, "
+                f"nhận được {row_level}"
+            )
+    
+        try:
+            date.fromisoformat(row_date)
+        except ValueError as exc:
+            raise ValueError(
+                f"date_start không hợp lệ: {row_date}"
+            ) from exc
+    
         if not since <= row_date <= until:
-            continue
-
+            raise ValueError(
+                f"Bản ghi nằm ngoài khoảng đồng bộ: {row_date}"
+            )
+    
         month = row_date[:7]
-
+    
         new_rows_by_month.setdefault(
             month,
             [],
