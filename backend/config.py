@@ -52,14 +52,25 @@ DATA_DIR = os.path.join(
     ROOT_DIR, "docs", "data"
 )
 
+# Thư mục lưu JSON phân mảnh
+ADS_DATA_DIR = os.path.join(
+    DATA_DIR, "ads"
+)
+
+# Danh sách tài khoản
+ACCOUNTS_DATA_FILE = os.path.join(
+    DATA_DIR, "accounts.json"
+)
+
+# Giữ đường dẫn cũ để phục vụ chuyển đổi dữ liệu
 ADS_DATA_FILE = os.path.join(
     DATA_DIR, "ads.json"
 )
 
+# Trạng thái đồng bộ
 SYNC_STATE_FILE = os.path.join(
     DATA_DIR, "sync_state.json"
 )
-
 # ==============================
 # DATA LEVELS
 # ==============================
