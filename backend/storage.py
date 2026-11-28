@@ -426,6 +426,228 @@ def update_ads(
 
     return updated_at
 
+# =====================================
+# SAFE AUDIT UPSERT
+# =====================================
+
+def upsert_audit_ads(
+    account,
+    new_rows,
+    since,
+    until,
+    level,
+):
+    """
+    Đối chiếu dữ liệu Meta với dữ liệu đang lưu.
+
+    - Bản ghi giống nhau: giữ nguyên.
+    - Bản ghi khác nhau: cập nhật.
+    - Bản ghi mới: bổ sung.
+    - Không xóa bản ghi cũ nếu API không trả về.
+    - Không chạy retention cleanup.
+    - Chỉ ghi file khi thực sự có thay đổi.
+    """
+
+    account_id = str(
+        account.get("account_id", "")
+    )
+
+    if not re.fullmatch(r"[0-9]+", account_id):
+        raise ValueError(
+            f"Account ID không hợp lệ: {account_id}"
+        )
+
+    if level not in ("campaign", "adset", "ad"):
+        raise ValueError(
+            f"Level không hợp lệ: {level}"
+        )
+
+    start = date.fromisoformat(since)
+    end = date.fromisoformat(until)
+
+    if start > end:
+        raise ValueError("Khoảng ngày không hợp lệ.")
+
+    rows_by_month = {}
+
+    # Kiểm tra toàn bộ dữ liệu mới trước khi ghi.
+    for row in new_rows:
+
+        if not isinstance(row, dict):
+            raise ValueError(
+                "Bản ghi mới không phải JSON object."
+            )
+
+        if str(row.get("account_id", "")) != account_id:
+            raise ValueError(
+                f"Sai account_id trong dữ liệu mới: {row}"
+            )
+
+        if row.get("level") != level:
+            raise ValueError(
+                f"Sai level trong dữ liệu mới: {row}"
+            )
+
+        row_date = str(row.get("date_start", ""))
+
+        try:
+            parsed_date = date.fromisoformat(row_date)
+        except ValueError as exc:
+            raise ValueError(
+                f"date_start không hợp lệ: {row_date}"
+            ) from exc
+
+        if not start <= parsed_date <= end:
+            raise ValueError(
+                f"Bản ghi nằm ngoài khoảng rà soát: {row_date}"
+            )
+
+        key = make_record_key(row)
+
+        if not key:
+            raise ValueError(
+                "Không tạo được khóa bản ghi mới."
+            )
+
+        month = row_date[:7]
+
+        month_rows = rows_by_month.setdefault(
+            month,
+            {},
+        )
+
+        if key in month_rows and month_rows[key] != row:
+            raise RuntimeError(
+                f"API trả về hai bản ghi khác nhau cùng khóa: {key}"
+            )
+
+        month_rows[key] = row
+
+    stats = {
+        "checked": 0,
+        "unchanged": 0,
+        "updated": 0,
+        "added": 0,
+        "files_changed": 0,
+    }
+
+    for month in _month_range(since, until):
+
+        path = _account_month_file(
+            account_id,
+            month,
+        )
+
+        payload = load_month_data(
+            account_id,
+            month,
+        )
+
+        existing_rows = payload.get("data", [])
+
+        if not isinstance(existing_rows, list):
+            raise RuntimeError(
+                f"Dữ liệu tháng không hợp lệ: {path}"
+            )
+
+        # Lập chỉ mục dữ liệu cũ.
+        existing_index = {}
+
+        for index, row in enumerate(existing_rows):
+
+            if not isinstance(row, dict):
+                raise RuntimeError(
+                    f"Bản ghi cũ không hợp lệ: {path}"
+                )
+
+            key = make_record_key(row)
+
+            if not key:
+                raise RuntimeError(
+                    f"Bản ghi cũ không có khóa hợp lệ: {path}"
+                )
+
+            if key in existing_index:
+                raise RuntimeError(
+                    f"Phát hiện khóa trùng trong dữ liệu cũ: {key}. "
+                    "Dừng để tránh ghi đè sai."
+                )
+
+            existing_index[key] = index
+
+        merged_rows = list(existing_rows)
+
+        month_new_rows = rows_by_month.get(
+            month,
+            {},
+        )
+
+        changed = False
+
+        for key, new_row in month_new_rows.items():
+
+            stats["checked"] += 1
+
+            if key in existing_index:
+
+                index = existing_index[key]
+                old_row = merged_rows[index]
+
+                if old_row == new_row:
+                    stats["unchanged"] += 1
+                    continue
+
+                merged_rows[index] = new_row
+                stats["updated"] += 1
+                changed = True
+
+            else:
+
+                existing_index[key] = len(merged_rows)
+                merged_rows.append(new_row)
+
+                stats["added"] += 1
+                changed = True
+
+        # Chỉ ghi file khi có dữ liệu mới hoặc dữ liệu thay đổi.
+        if changed:
+
+            merged_rows.sort(
+                key=lambda row: (
+                    row.get("date_start", ""),
+                    row.get("level", ""),
+                    row.get("campaign_id", ""),
+                    row.get("adset_id", ""),
+                    row.get("ad_id", ""),
+                )
+            )
+
+            updated_payload = {
+                "account_id": account_id,
+                "month": month,
+                "updated_at": datetime.now(
+                    timezone.utc
+                ).isoformat(),
+                "data": merged_rows,
+            }
+
+            _atomic_write_json(
+                path,
+                updated_payload,
+            )
+
+            stats["files_changed"] += 1
+
+            logger.info(
+                "Audit cập nhật: account=%s | month=%s | "
+                "level=%s | số bản ghi=%s",
+                account_id,
+                month,
+                level,
+                len(merged_rows),
+            )
+
+    return stats
 
 # =====================================
 # RETENTION CLEANUP
